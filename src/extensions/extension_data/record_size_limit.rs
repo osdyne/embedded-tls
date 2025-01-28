@@ -9,7 +9,7 @@ use crate::{
 /// RFC 8449
 #[derive(Debug, Copy, Clone, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct RecordSizeLimit(u16);
+pub struct RecordSizeLimit(pub u16);
 
 impl RecordSizeLimit {
     pub fn parse(buf: &mut ParseBuffer) -> Result<Self, ParseError> {
