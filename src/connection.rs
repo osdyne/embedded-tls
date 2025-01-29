@@ -296,6 +296,82 @@ impl<'a> State {
             State::ApplicationData => Ok(State::ApplicationData),
         }
     }
+
+    /// Processes connection state in a non-blocking context.
+    ///
+    /// Read records are consumed from the record reader;
+    /// `TlsError::WouldBlock` is returned if the next step is to receive a
+    /// record, but no full record is currently present.
+    ///
+    /// Write records are queued in the write buffer.
+    ///
+    /// TODO: sending aborts is currently not restartable so is considered
+    /// fatal. Given that these have a finite length, with a sufficiently
+    /// sized TX buffer this should not happen.
+    #[allow(clippy::too_many_arguments)]
+    pub fn process_nonblocking<'v, Provider>(
+        self,
+        handshake: &mut Handshake<Provider::CipherSuite>,
+        record_reader: &mut RecordReader<'_>,
+        tx_buf: &mut WriteBuffer,
+        key_schedule: &mut KeySchedule<Provider::CipherSuite>,
+        config: &TlsConfig<'a>,
+        crypto_provider: &mut Provider,
+    ) -> Result<State, TlsError>
+    where
+        Provider: CryptoProvider,
+    {
+        match self {
+            State::ClientHello => {
+                let (state, _) =
+                    client_hello(key_schedule, config, crypto_provider, tx_buf, handshake)?;
+
+                key_schedule.write_state().increment_counter();
+
+                Ok(state)
+            }
+            State::ServerHello => {
+                let record = record_reader.read_nonblocking(key_schedule.read_state())?;
+
+                let result = process_server_hello(handshake, key_schedule, record);
+
+                handle_processing_error_nonblocking(result, key_schedule, tx_buf)
+                    .inspect_err(|e| assert!(!matches!(e, TlsError::WouldBlock)))
+            }
+            State::ServerVerify => {
+                let record = record_reader.read_nonblocking(key_schedule.read_state())?;
+
+                let result =
+                    process_server_verify(handshake, key_schedule, config, crypto_provider, record);
+
+                handle_processing_error_nonblocking(result, key_schedule, tx_buf)
+                    .inspect_err(|e| assert!(!matches!(e, TlsError::WouldBlock)))
+            }
+            State::ClientCert => {
+                let (state, _) = client_cert(handshake, key_schedule, config, tx_buf)?;
+
+                key_schedule.write_state().increment_counter();
+
+                Ok(state)
+            }
+            State::ClientCertVerify => {
+                let (result, _) =
+                    client_cert_verify(key_schedule, config, crypto_provider, tx_buf)?;
+
+                key_schedule.write_state().increment_counter();
+
+                result
+            }
+            State::ClientFinished => {
+                let _ = client_finished(key_schedule, tx_buf)?;
+
+                key_schedule.write_state().increment_counter();
+
+                client_finished_finalize(key_schedule, handshake)
+            }
+            State::ApplicationData => Ok(State::ApplicationData),
+        }
+    }
 }
 
 fn handle_processing_error_blocking<CipherSuite>(
@@ -338,6 +414,28 @@ where
     transport.flush().map_err(|e| TlsError::Io(e.kind()))?;
 
     Ok(())
+}
+
+fn handle_processing_error_nonblocking<CipherSuite>(
+    result: Result<State, TlsError>,
+    key_schedule: &mut KeySchedule<CipherSuite>,
+    tx_buf: &mut WriteBuffer,
+) -> Result<State, TlsError>
+where
+    CipherSuite: TlsCipherSuite,
+{
+    if let Err(TlsError::AbortHandshake(level, description)) = result {
+        let (write_key_schedule, read_key_schedule) = key_schedule.as_split();
+        let _ = tx_buf.write_record(
+            &ClientRecord::Alert(Alert { level, description }, false),
+            write_key_schedule,
+            Some(read_key_schedule),
+        )?;
+
+        key_schedule.write_state().increment_counter();
+    }
+
+    result
 }
 
 async fn handle_processing_error<'a, CipherSuite>(

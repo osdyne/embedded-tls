@@ -37,6 +37,11 @@ pub enum SignatureScheme {
     Sha224Rsa,
     Sha224Dsa,
 
+    /* rfc8734 */
+    EcdsaBrainpoolP256r1tls13Sha256,
+    EcdsaBrainpoolP384r1tls13Sha384,
+    EcdsaBrainpoolP512r1tls13Sha512,
+
     /* Legacy algorithms */
     RsaPkcs1Sha1,
     EcdsaSha1,
@@ -66,6 +71,10 @@ impl SignatureScheme {
             0x0809 => Ok(Self::RsaPssPssSha256),
             0x080a => Ok(Self::RsaPssPssSha384),
             0x080b => Ok(Self::RsaPssPssSha512),
+
+            0x081a => Ok(Self::EcdsaBrainpoolP256r1tls13Sha256),
+            0x081b => Ok(Self::EcdsaBrainpoolP384r1tls13Sha384),
+            0x081c => Ok(Self::EcdsaBrainpoolP512r1tls13Sha512),
 
             0x0303 => Ok(Self::Sha224Ecdsa),
             0x0301 => Ok(Self::Sha224Rsa),
@@ -98,6 +107,10 @@ impl SignatureScheme {
             Self::RsaPssPssSha256 => 0x0809,
             Self::RsaPssPssSha384 => 0x080a,
             Self::RsaPssPssSha512 => 0x080b,
+
+            Self::EcdsaBrainpoolP256r1tls13Sha256 => 0x081a,
+            Self::EcdsaBrainpoolP384r1tls13Sha384 => 0x081b,
+            Self::EcdsaBrainpoolP512r1tls13Sha512 => 0x081c,
 
             Self::Sha224Ecdsa => 0x0303,
             Self::Sha224Rsa => 0x0301,

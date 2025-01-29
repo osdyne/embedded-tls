@@ -8,12 +8,17 @@ use crate::handshake::{
 };
 use crate::TlsError;
 use core::marker::PhantomData;
+use core::time::Duration;
 use digest::Digest;
 use heapless::Vec;
+use webpki::types::{CertificateDer, ServerName};
+
 #[cfg(all(not(feature = "alloc"), feature = "webpki"))]
-impl TryInto<&'static webpki::SignatureAlgorithm> for SignatureScheme {
+impl TryInto<&'static dyn webpki::types::SignatureVerificationAlgorithm> for SignatureScheme {
     type Error = TlsError;
-    fn try_into(self) -> Result<&'static webpki::SignatureAlgorithm, Self::Error> {
+    fn try_into(
+        self,
+    ) -> Result<&'static dyn webpki::types::SignatureVerificationAlgorithm, Self::Error> {
         // TODO: support other schemes via 'alloc' feature
         #[allow(clippy::match_same_arms)] // Style
         match self {
@@ -22,8 +27,8 @@ impl TryInto<&'static webpki::SignatureAlgorithm> for SignatureScheme {
             | SignatureScheme::RsaPkcs1Sha512 => Err(TlsError::InvalidSignatureScheme),
 
             /* ECDSA algorithms */
-            SignatureScheme::EcdsaSecp256r1Sha256 => Ok(&webpki::ECDSA_P256_SHA256),
-            SignatureScheme::EcdsaSecp384r1Sha384 => Ok(&webpki::ECDSA_P384_SHA384),
+            SignatureScheme::EcdsaSecp256r1Sha256 => Ok(webpki::ring::ECDSA_P256_SHA256),
+            SignatureScheme::EcdsaSecp384r1Sha384 => Ok(webpki::ring::ECDSA_P384_SHA384),
             SignatureScheme::EcdsaSecp521r1Sha512 => Err(TlsError::InvalidSignatureScheme),
 
             /* RSASSA-PSS algorithms with public key OID rsaEncryption */
@@ -32,7 +37,7 @@ impl TryInto<&'static webpki::SignatureAlgorithm> for SignatureScheme {
             | SignatureScheme::RsaPssRsaeSha512 => Err(TlsError::InvalidSignatureScheme),
 
             /* EdDSA algorithms */
-            SignatureScheme::Ed25519 => Ok(&webpki::ED25519),
+            SignatureScheme::Ed25519 => Ok(webpki::ring::ED25519),
             SignatureScheme::Ed448
             | SignatureScheme::Sha224Ecdsa
             | SignatureScheme::Sha224Rsa
@@ -43,6 +48,13 @@ impl TryInto<&'static webpki::SignatureAlgorithm> for SignatureScheme {
             | SignatureScheme::RsaPssPssSha384
             | SignatureScheme::RsaPssPssSha512 => Err(TlsError::InvalidSignatureScheme),
 
+            /* RFC8734: Elliptic Curve Cryptography (ECC) Brainpool Curves for Transport Layer Security (TLS) Version 1.3 */
+            SignatureScheme::EcdsaBrainpoolP256r1tls13Sha256
+            | SignatureScheme::EcdsaBrainpoolP384r1tls13Sha384
+            | SignatureScheme::EcdsaBrainpoolP512r1tls13Sha512 => {
+                Err(TlsError::InvalidSignatureScheme)
+            }
+
             /* Legacy algorithms */
             SignatureScheme::RsaPkcs1Sha1 | SignatureScheme::EcdsaSha1 => {
                 Err(TlsError::InvalidSignatureScheme)
@@ -52,26 +64,34 @@ impl TryInto<&'static webpki::SignatureAlgorithm> for SignatureScheme {
 }
 
 #[cfg(all(feature = "alloc", feature = "webpki"))]
-impl TryInto<&'static webpki::SignatureAlgorithm> for SignatureScheme {
+impl TryInto<&'static dyn webpki::types::SignatureVerificationAlgorithm> for SignatureScheme {
     type Error = TlsError;
-    fn try_into(self) -> Result<&'static webpki::SignatureAlgorithm, Self::Error> {
+    fn try_into(
+        self,
+    ) -> Result<&'static dyn webpki::types::SignatureVerificationAlgorithm, Self::Error> {
         match self {
-            SignatureScheme::RsaPkcs1Sha256 => Ok(&webpki::RSA_PKCS1_2048_8192_SHA256),
-            SignatureScheme::RsaPkcs1Sha384 => Ok(&webpki::RSA_PKCS1_2048_8192_SHA384),
-            SignatureScheme::RsaPkcs1Sha512 => Ok(&webpki::RSA_PKCS1_2048_8192_SHA512),
+            SignatureScheme::RsaPkcs1Sha256 => Ok(webpki::ring::RSA_PKCS1_2048_8192_SHA256),
+            SignatureScheme::RsaPkcs1Sha384 => Ok(webpki::ring::RSA_PKCS1_2048_8192_SHA384),
+            SignatureScheme::RsaPkcs1Sha512 => Ok(webpki::ring::RSA_PKCS1_2048_8192_SHA512),
 
             /* ECDSA algorithms */
-            SignatureScheme::EcdsaSecp256r1Sha256 => Ok(&webpki::ECDSA_P256_SHA256),
-            SignatureScheme::EcdsaSecp384r1Sha384 => Ok(&webpki::ECDSA_P384_SHA384),
+            SignatureScheme::EcdsaSecp256r1Sha256 => Ok(webpki::ring::ECDSA_P256_SHA256),
+            SignatureScheme::EcdsaSecp384r1Sha384 => Ok(webpki::ring::ECDSA_P384_SHA384),
             SignatureScheme::EcdsaSecp521r1Sha512 => Err(TlsError::InvalidSignatureScheme),
 
             /* RSASSA-PSS algorithms with public key OID rsaEncryption */
-            SignatureScheme::RsaPssRsaeSha256 => Ok(&webpki::RSA_PSS_2048_8192_SHA256_LEGACY_KEY),
-            SignatureScheme::RsaPssRsaeSha384 => Ok(&webpki::RSA_PSS_2048_8192_SHA384_LEGACY_KEY),
-            SignatureScheme::RsaPssRsaeSha512 => Ok(&webpki::RSA_PSS_2048_8192_SHA512_LEGACY_KEY),
+            SignatureScheme::RsaPssRsaeSha256 => {
+                Ok(webpki::ring::RSA_PSS_2048_8192_SHA256_LEGACY_KEY)
+            }
+            SignatureScheme::RsaPssRsaeSha384 => {
+                Ok(webpki::ring::RSA_PSS_2048_8192_SHA384_LEGACY_KEY)
+            }
+            SignatureScheme::RsaPssRsaeSha512 => {
+                Ok(webpki::ring::RSA_PSS_2048_8192_SHA512_LEGACY_KEY)
+            }
 
             /* EdDSA algorithms */
-            SignatureScheme::Ed25519 => Ok(&webpki::ED25519),
+            SignatureScheme::Ed25519 => Ok(webpki::ring::ED25519),
             SignatureScheme::Ed448 => Err(TlsError::InvalidSignatureScheme),
 
             SignatureScheme::Sha224Ecdsa => Err(TlsError::InvalidSignatureScheme),
@@ -83,6 +103,13 @@ impl TryInto<&'static webpki::SignatureAlgorithm> for SignatureScheme {
             SignatureScheme::RsaPssPssSha384 => Err(TlsError::InvalidSignatureScheme),
             SignatureScheme::RsaPssPssSha512 => Err(TlsError::InvalidSignatureScheme),
 
+            /* RFC8734: Elliptic Curve Cryptography (ECC) Brainpool Curves for Transport Layer Security (TLS) Version 1.3 */
+            SignatureScheme::EcdsaBrainpoolP256r1tls13Sha256
+            | SignatureScheme::EcdsaBrainpoolP384r1tls13Sha384
+            | SignatureScheme::EcdsaBrainpoolP512r1tls13Sha512 => {
+                Err(TlsError::InvalidSignatureScheme)
+            }
+
             /* Legacy algorithms */
             SignatureScheme::RsaPkcs1Sha1 => Err(TlsError::InvalidSignatureScheme),
             SignatureScheme::EcdsaSha1 => Err(TlsError::InvalidSignatureScheme),
@@ -90,12 +117,12 @@ impl TryInto<&'static webpki::SignatureAlgorithm> for SignatureScheme {
     }
 }
 
-static ALL_SIGALGS: &[&webpki::SignatureAlgorithm] = &[
-    &webpki::ECDSA_P256_SHA256,
-    &webpki::ECDSA_P256_SHA384,
-    &webpki::ECDSA_P384_SHA256,
-    &webpki::ECDSA_P384_SHA384,
-    &webpki::ED25519,
+static ALL_SIGALGS: &[&dyn webpki::types::SignatureVerificationAlgorithm] = &[
+    webpki::ring::ECDSA_P256_SHA256,
+    webpki::ring::ECDSA_P256_SHA384,
+    webpki::ring::ECDSA_P384_SHA256,
+    webpki::ring::ECDSA_P384_SHA384,
+    webpki::ring::ED25519,
 ];
 
 pub struct CertVerifier<CipherSuite, Clock, const CERT_SIZE: usize>
@@ -185,7 +212,8 @@ fn verify_signature(
     if !certificate.entries.is_empty() {
         // TODO: Support intermediates...
         if let CertificateEntryRef::X509(certificate) = certificate.entries[0] {
-            let cert = webpki::EndEntityCert::try_from(certificate).map_err(|e| {
+            let cert = CertificateDer::from_slice(certificate);
+            let cert = webpki::EndEntityCert::try_from(&cert).map_err(|e| {
                 warn!("Error loading cert: {:?}", e);
                 TlsError::DecodeError
             })?;
@@ -221,7 +249,8 @@ fn verify_certificate(
     let mut verified = false;
     let mut host_verified = false;
     if let Some(Certificate::X509(ca)) = ca {
-        let trust = webpki::TrustAnchor::try_from_cert_der(ca).map_err(|e| {
+        let ca_der = CertificateDer::from_slice(ca);
+        let trust = webpki::anchor_from_trusted_cert(&ca_der).map_err(|e| {
             warn!("Error loading CA: {:?}", e);
             TlsError::DecodeError
         })?;
@@ -231,16 +260,17 @@ fn verify_certificate(
         if !certificate.entries.is_empty() {
             // TODO: Support intermediates...
             if let CertificateEntryRef::X509(certificate) = certificate.entries[0] {
-                let cert = webpki::EndEntityCert::try_from(certificate).map_err(|e| {
+                let certificate_der = CertificateDer::from_slice(certificate);
+                let cert = webpki::EndEntityCert::try_from(&certificate_der).map_err(|e| {
                     warn!("Error loading cert: {:?}", e);
                     TlsError::DecodeError
                 })?;
 
                 let time = if let Some(now) = now {
-                    webpki::Time::from_seconds_since_unix_epoch(now)
+                    webpki::types::UnixTime::since_unix_epoch(Duration::from_secs(now))
                 } else {
                     // If no clock is provided, the validity check will fail
-                    webpki::Time::from_seconds_since_unix_epoch(0)
+                    webpki::types::UnixTime::since_unix_epoch(Duration::from_secs(0))
                 };
                 info!("Certificate is loaded!");
                 match cert.verify_for_usage(
@@ -249,22 +279,25 @@ fn verify_certificate(
                     &[],
                     time,
                     webpki::KeyUsage::server_auth(),
-                    &[],
+                    None, // FIXME
+                    None, // FIXME
                 ) {
-                    Ok(()) => verified = true,
+                    Ok(_verified_path) => verified = true,
                     Err(e) => {
                         warn!("Error verifying certificate: {:?}", e);
                     }
                 }
 
                 if let Some(server_name) = verify_host {
-                    match webpki::SubjectNameRef::try_from_ascii(server_name.as_bytes()) {
-                        Ok(subject) => match cert.verify_is_valid_for_subject_name(subject) {
-                            Ok(()) => host_verified = true,
-                            Err(e) => {
-                                warn!("Error verifying host: {:?}", e);
+                    match ServerName::try_from(server_name.as_bytes()) {
+                        Ok(server_name) => {
+                            match cert.verify_is_valid_for_subject_name(&server_name) {
+                                Ok(()) => host_verified = true,
+                                Err(e) => {
+                                    warn!("Error verifying host: {:?}", e);
+                                }
                             }
-                        },
+                        }
                         Err(e) => {
                             warn!("Error verifying host: {:?}", e);
                         }

@@ -363,7 +363,7 @@ pub fn run(listener: TcpListener) {
     let certs = load_certs(&test_dir.join("data").join("server-cert.pem"));
     let privkey = load_private_key(&test_dir.join("data").join("server-key.pem"));
 
-    let config = rustls::ServerConfig::builder()
+    let mut config = rustls::ServerConfig::builder()
         .with_cipher_suites(rustls::ALL_CIPHER_SUITES)
         .with_kx_groups(&rustls::ALL_KX_GROUPS)
         .with_protocol_versions(versions)
@@ -371,6 +371,9 @@ pub fn run(listener: TcpListener) {
         .with_no_client_auth()
         .with_single_cert(certs, privkey)
         .unwrap();
+
+    // Allow SSLKEYLOGFILE
+    config.key_log = Arc::new(rustls::KeyLogFile::new());
 
     run_with_config(listener, config)
 }

@@ -13,7 +13,7 @@ pub struct RecordReader<'a> {
     /// The number of decoded bytes in the buffer
     decoded: usize,
     /// The number of read but not yet decoded bytes in the buffer
-    pending: usize,
+    pub(crate) pending: usize,
 }
 
 impl<'a> RecordReader<'a> {
@@ -25,6 +25,16 @@ impl<'a> RecordReader<'a> {
             buf,
             decoded: 0,
             pending: 0,
+        }
+    }
+
+    pub fn with_data(buf: &'a mut [u8], already_decoded: usize) -> Self {
+        let buf_len = buf.len();
+        assert!(already_decoded <= buf_len);
+        Self {
+            buf,
+            decoded: already_decoded,
+            pending: buf_len - already_decoded,
         }
     }
 
@@ -87,6 +97,32 @@ impl<'a> RecordReader<'a> {
                 return Err(TlsError::IoError);
             }
             self.pending += read;
+        }
+
+        Ok(())
+    }
+
+    pub fn read_nonblocking<'m, CipherSuite: TlsCipherSuite>(
+        &'m mut self,
+        key_schedule: &mut ReadKeySchedule<CipherSuite>,
+    ) -> Result<ServerRecord<'m, CipherSuite>, TlsError> {
+        let header = {
+            || -> Result<RecordHeader, TlsError> {
+                // This only returns the header if the full TLS record is present in the buffer.
+                self.ensure_nonblocking(RecordHeader::LEN)?;
+                let header = self.record_header()?;
+                self.ensure_nonblocking(RecordHeader::LEN + header.content_length())?;
+                Ok(header)
+            }
+        }()?;
+        self.consume(header, key_schedule.transcript_hash())
+    }
+
+    /// Ensure we have at least `amount` bytes to read, or return
+    /// `TlsError::WouldBlock` otherwise.
+    fn ensure_nonblocking(&mut self, amount: usize) -> Result<(), TlsError> {
+        if self.pending < amount {
+            return Err(TlsError::WouldBlock);
         }
 
         Ok(())

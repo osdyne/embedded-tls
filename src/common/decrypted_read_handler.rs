@@ -1,8 +1,12 @@
 use core::ops::Range;
 
 use crate::{
-    alert::AlertDescription, common::decrypted_buffer_info::DecryptedBufferInfo,
-    config::TlsCipherSuite, handshake::ServerHandshake, record::ServerRecord, TlsError,
+    alert::AlertDescription,
+    common::decrypted_buffer_info::DecryptedBufferInfo,
+    config::TlsCipherSuite,
+    handshake::ServerHandshake,
+    record::{RecordHeader, ServerRecord},
+    TlsError,
 };
 
 pub struct DecryptedReadHandler<'a> {
@@ -39,6 +43,7 @@ impl DecryptedReadHandler<'_> {
                 self.buffer_info.offset = offset;
                 self.buffer_info.len = slice.len();
                 self.buffer_info.consumed = 0;
+                self.buffer_info.record_length = data.header.content_length() + RecordHeader::LEN;
                 Ok(())
             }
             ServerRecord::Alert(alert) => {

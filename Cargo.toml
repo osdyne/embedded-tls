@@ -33,7 +33,7 @@ embedded-io = "0.6"
 embedded-io-async = "0.6"
 embedded-io-adapters = { version = "0.6", optional = true }
 generic-array = { version = "0.14", default-features = false }
-webpki = { package = "rustls-webpki", version = "0.101.7", default-features = false, optional = true }
+webpki = { package = "rustls-webpki", version = "0.102.8", default-features = false, features = ["ring"], optional = true }
 signature = { version = "2.2", default-features = false }
 ecdsa = { version = "0.16.9", default-features = false }
 
