@@ -13,7 +13,7 @@ pub struct RecordReader<'a> {
     /// The number of decoded bytes in the buffer
     decoded: usize,
     /// The number of read but not yet decoded bytes in the buffer
-    pending: usize,
+    pub(crate) pending: usize,
 }
 
 pub struct RecordReaderBorrowMut<'a> {
@@ -44,6 +44,16 @@ impl<'a> RecordReader<'a> {
         }
     }
 
+    pub fn with_data(buf: &'a mut [u8], already_decoded: usize) -> Self {
+        let buf_len = buf.len();
+        assert!(already_decoded <= buf_len);
+        Self {
+            buf,
+            decoded: already_decoded,
+            pending: buf_len - already_decoded,
+        }
+    }
+
     pub async fn read<'m, CipherSuite: TlsCipherSuite>(
         &'m mut self,
         transport: &mut impl AsyncRead,
@@ -71,6 +81,13 @@ impl<'a> RecordReader<'a> {
             transport,
             key_schedule,
         )
+    }
+
+    pub fn read_nonblocking<'m, CipherSuite: TlsCipherSuite>(
+        &'m mut self,
+        key_schedule: &mut ReadKeySchedule<CipherSuite>,
+    ) -> Result<ServerRecord<'m, CipherSuite>, TlsError> {
+        read_nonblocking(self.buf, &mut self.decoded, &mut self.pending, key_schedule)
     }
 }
 
@@ -220,6 +237,42 @@ fn advance_blocking(
         }
         remain -= read;
         *pending += read;
+    }
+
+    Ok(())
+}
+
+pub fn read_nonblocking<'m, CipherSuite: TlsCipherSuite>(
+    buf: &'m mut [u8],
+    decoded: &mut usize,
+    pending: &mut usize,
+    key_schedule: &mut ReadKeySchedule<CipherSuite>,
+) -> Result<ServerRecord<'m, CipherSuite>, TlsError> {
+    // Ensure that the header is in the buffer.
+    ensure_nonblocking(*pending, RecordHeader::LEN)?;
+    let header = RecordHeader::decode(
+        buf[*decoded..*decoded + RecordHeader::LEN]
+            .try_into()
+            .unwrap(),
+    )?;
+
+    // Ensure that the full TLS record is present in the buffer.
+    ensure_nonblocking(*pending, RecordHeader::LEN + header.content_length())?;
+
+    consume(
+        buf,
+        decoded,
+        pending,
+        header,
+        key_schedule.transcript_hash(),
+    )
+}
+
+/// Ensure we have at least `amount` bytes to read, or return
+/// `TlsError::WouldBlock` otherwise.
+fn ensure_nonblocking(pending: usize, amount: usize) -> Result<(), TlsError> {
+    if pending < amount {
+        return Err(TlsError::WouldBlock);
     }
 
     Ok(())

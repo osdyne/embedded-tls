@@ -10,7 +10,7 @@ pub struct CertificateRef<'a> {
     raw_entries: &'a [u8],
     request_context: &'a [u8],
 
-    pub(crate) entries: Vec<CertificateEntryRef<'a>, 16>,
+    pub entries: Vec<CertificateEntryRef<'a>, 16>,
 }
 
 impl<'a> CertificateRef<'a> {

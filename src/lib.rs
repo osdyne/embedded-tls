@@ -74,6 +74,9 @@ mod write_buffer;
 
 pub use config::UnsecureProvider;
 pub use extensions::extension_data::signature_algorithms::SignatureScheme;
+pub use handshake::certificate::{
+    Certificate as OwnedCertificate, CertificateEntryRef, CertificateRef as ServerCertificate,
+};
 pub use handshake::certificate_verify::CertificateVerify;
 pub use rand_core::{CryptoRng, CryptoRngCore};
 
@@ -87,6 +90,7 @@ pub mod pki;
 
 mod asynch;
 pub use asynch::*;
+pub mod nonblocking;
 
 pub use flush_policy::*;
 
@@ -126,6 +130,7 @@ pub enum TlsError {
     EncodeError,
     DecodeError,
     Io(embedded_io::ErrorKind),
+    WouldBlock,
 }
 
 impl embedded_io::Error for TlsError {
