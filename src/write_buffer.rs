@@ -7,22 +7,41 @@ use crate::{
     record::{ClientRecord, ClientRecordHeader},
 };
 
+pub struct WriteBufferInfo {
+    /// Current write position, relative to the last closed record.
+    pos: usize,
+    /// Current submitted position (closed records that are ready to be transmitted).
+    record_offset: usize,
+    current_header: Option<ClientRecordHeader>,
+}
+
+impl WriteBufferInfo {
+    pub fn empty() -> Self {
+        Self {
+            pos: 0,
+            record_offset: 0,
+            current_header: None,
+        }
+    }
+
+    pub fn pending_bytes(&self) -> usize {
+        self.record_offset + self.pos
+    }
+}
+
 pub struct WriteBuffer<'a> {
     buffer: &'a mut [u8],
-    pos: usize,
-    current_header: Option<ClientRecordHeader>,
+    info: WriteBufferInfo,
 }
 
 pub(crate) struct WriteBufferBorrow<'a> {
     buffer: &'a [u8],
-    pos: &'a usize,
-    current_header: &'a Option<ClientRecordHeader>,
+    info: &'a WriteBufferInfo,
 }
 
 pub(crate) struct WriteBufferBorrowMut<'a> {
     buffer: &'a mut [u8],
-    pos: &'a mut usize,
-    current_header: &'a mut Option<ClientRecordHeader>,
+    info: &'a mut WriteBufferInfo,
 }
 
 impl<'a> WriteBuffer<'a> {
@@ -33,24 +52,47 @@ impl<'a> WriteBuffer<'a> {
         );
         Self {
             buffer,
-            pos: 0,
-            current_header: None,
+            info: WriteBufferInfo {
+                pos: 0,
+                record_offset: 0,
+                current_header: None,
+            },
         }
+    }
+
+    /// Reassembles a write buffer in a non-blocking context.
+    /// Unlike the usage of the WriteBuffer in the blocking variant, this does not require
+    /// there to be sufficient space in the write buffer for the TLS record overhead;
+    /// `start_record()` and `close_record()` will return `TlsError::WouldBlock` in these cases.
+    pub fn from_info(buffer: &'a mut [u8], info: WriteBufferInfo) -> Self {
+        assert!(info.record_offset + info.pos <= buffer.len());
+        Self { buffer, info }
+    }
+
+    /// Removes the buffer reference, only retains the buffer info. Returns the
+    /// number of completed (`record_offset`) octets, and fixes up the returned
+    /// WriteBufferInfo to accomodate the dropped octets.
+    pub fn into_info(self) -> (usize, WriteBufferInfo) {
+        (
+            self.info.record_offset,
+            WriteBufferInfo {
+                record_offset: 0,
+                ..self.info
+            },
+        )
     }
 
     pub(crate) fn reborrow_mut(&mut self) -> WriteBufferBorrowMut<'_> {
         WriteBufferBorrowMut {
             buffer: self.buffer,
-            pos: &mut self.pos,
-            current_header: &mut self.current_header,
+            info: &mut self.info,
         }
     }
 
     pub(crate) fn reborrow(&self) -> WriteBufferBorrow<'_> {
         WriteBufferBorrow {
             buffer: self.buffer,
-            pos: &self.pos,
-            current_header: &self.current_header,
+            info: &self.info,
         }
     }
 
@@ -81,12 +123,7 @@ impl<'a> WriteBuffer<'a> {
     where
         CipherSuite: TlsCipherSuite,
     {
-        close_record(
-            self.buffer,
-            &mut self.pos,
-            &mut self.current_header,
-            write_key_schedule,
-        )
+        close_record(self.buffer, &mut self.info, write_key_schedule)
     }
 
     pub fn write_record<CipherSuite>(
@@ -100,8 +137,7 @@ impl<'a> WriteBuffer<'a> {
     {
         write_record(
             self.buffer,
-            &mut self.pos,
-            &mut self.current_header,
+            &mut self.info,
             record,
             write_key_schedule,
             read_key_schedule,
@@ -111,27 +147,31 @@ impl<'a> WriteBuffer<'a> {
 
 impl WriteBufferBorrow<'_> {
     fn max_block_size(&self) -> usize {
+        // `max_block_size` is invalid to call if there is no space for the overhead.
+        assert!(self.buffer.len() >= TLS_RECORD_OVERHEAD);
         self.buffer.len() - TLS_RECORD_OVERHEAD
     }
 
     pub fn is_full(&self) -> bool {
-        *self.pos == self.max_block_size()
+        self.info.record_offset + self.info.pos == self.max_block_size()
     }
 
     pub fn len(&self) -> usize {
-        *self.pos
+        self.info.pos
     }
 
+    /// Returns whether there is no incomplete record in the buffer.
+    /// Completed records (when in non-blocking) are ignored.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
     pub fn space(&self) -> usize {
-        self.max_block_size() - *self.pos
+        self.max_block_size() - self.info.record_offset - self.info.pos
     }
 
     pub fn contains(&self, header: ClientRecordHeader) -> bool {
-        self.current_header.as_ref() == Some(&header)
+        self.info.current_header == Some(header)
     }
 }
 
@@ -139,8 +179,7 @@ impl WriteBufferBorrowMut<'_> {
     fn reborrow(&self) -> WriteBufferBorrow<'_> {
         WriteBufferBorrow {
             buffer: self.buffer,
-            pos: self.pos,
-            current_header: self.current_header,
+            info: self.info,
         }
     }
 
@@ -159,14 +198,16 @@ impl WriteBufferBorrowMut<'_> {
     pub fn append(&mut self, buf: &[u8]) -> usize {
         let buffered = usize::min(buf.len(), self.reborrow().space());
         if buffered > 0 {
-            self.buffer[*self.pos..*self.pos + buffered].copy_from_slice(&buf[..buffered]);
-            *self.pos += buffered;
+            self.buffer[self.info.record_offset + self.info.pos
+                ..self.info.record_offset + self.info.pos + buffered]
+                .copy_from_slice(&buf[..buffered]);
+            self.info.pos += buffered;
         }
         buffered
     }
 
     pub(crate) fn start_record(&mut self, header: ClientRecordHeader) -> Result<(), TlsError> {
-        start_record(self.buffer, self.pos, self.current_header, header)
+        start_record(self.buffer, self.info, header)
     }
 
     pub fn close_record<CipherSuite>(
@@ -176,27 +217,33 @@ impl WriteBufferBorrowMut<'_> {
     where
         CipherSuite: TlsCipherSuite,
     {
-        close_record(
-            self.buffer,
-            self.pos,
-            self.current_header,
-            write_key_schedule,
-        )
+        close_record(self.buffer, self.info, write_key_schedule)
     }
 }
 
 fn start_record(
     buffer: &mut [u8],
-    pos: &mut usize,
-    current_header: &mut Option<ClientRecordHeader>,
+    info: &mut WriteBufferInfo,
     header: ClientRecordHeader,
 ) -> Result<(), TlsError> {
-    debug_assert!(current_header.is_none());
+    debug_assert!(info.current_header.is_none());
+
+    assert!(info.pos == 0);
+
+    // Verify invariant.
+    assert!(buffer.len() >= info.record_offset + info.pos);
+
+    // See if there is insufficient space in the buffer for a minimum
+    // application record. Outside of a non-blocking context, this cannot
+    // happen since `::new` verifies that the buffer space is large enough.
+    if buffer.len() - info.record_offset - info.pos < TLS_RECORD_OVERHEAD {
+        return Err(TlsError::WouldBlock);
+    }
 
     debug!("start_record({:?})", header);
-    *current_header = Some(header);
+    info.current_header = Some(header);
 
-    with_buffer(buffer, pos, |mut buf| {
+    with_buffer(buffer, info, |mut buf| {
         header.encode(&mut buf)?;
         buf.push_u16(0)?;
         Ok(buf.rewind())
@@ -205,14 +252,14 @@ fn start_record(
 
 fn with_buffer(
     buffer: &mut [u8],
-    pos: &mut usize,
+    info: &mut WriteBufferInfo,
     op: impl FnOnce(CryptoBuffer) -> Result<CryptoBuffer, TlsError>,
 ) -> Result<(), TlsError> {
-    let buf = CryptoBuffer::wrap_with_pos(buffer, *pos);
+    let buf = CryptoBuffer::wrap_with_pos(&mut buffer[info.record_offset..], info.pos);
 
     match op(buf) {
         Ok(buf) => {
-            *pos = buf.len();
+            info.pos = buf.len();
             Ok(())
         }
         Err(err) => Err(err),
@@ -221,8 +268,7 @@ fn with_buffer(
 
 fn close_record<'a, CipherSuite>(
     buffer: &'a mut [u8],
-    pos: &mut usize,
-    current_header: &mut Option<ClientRecordHeader>,
+    info: &mut WriteBufferInfo,
     write_key_schedule: &mut WriteKeySchedule<CipherSuite>,
 ) -> Result<&'a [u8], TlsError>
 where
@@ -230,8 +276,20 @@ where
 {
     const HEADER_SIZE: usize = 5;
 
-    let header = current_header.take().unwrap();
-    with_buffer(buffer, pos, |mut buf| {
+    // Verify invariant.
+    assert!(buffer.len() >= info.record_offset + info.pos);
+    assert!(TLS_RECORD_OVERHEAD >= HEADER_SIZE);
+
+    // See if there is insufficient space in the buffer to close the record.
+    // Outside of a non-blocking context, this cannot happen since `::new`
+    // verifies that the buffer space is large enough to fit at least some
+    // data, and `append` ensures that enough space is left at the end.
+    if buffer.len() - info.record_offset - info.pos < (TLS_RECORD_OVERHEAD - HEADER_SIZE) {
+        return Err(TlsError::WouldBlock);
+    }
+
+    let header = info.current_header.take().unwrap();
+    with_buffer(buffer, info, |mut buf| {
         if !header.is_encrypted() {
             return Ok(buf);
         }
@@ -243,23 +301,23 @@ where
         encrypt(write_key_schedule, &mut buf)?;
         Ok(buf.rewind())
     })?;
-    let [upper, lower] = ((*pos - HEADER_SIZE) as u16).to_be_bytes();
+    let [upper, lower] = ((info.pos - HEADER_SIZE) as u16).to_be_bytes();
 
-    buffer[3] = upper;
-    buffer[4] = lower;
+    buffer[info.record_offset + 3] = upper;
+    buffer[info.record_offset + 4] = lower;
 
-    let slice = &buffer[..*pos];
+    let slice = &buffer[info.record_offset..info.record_offset + info.pos];
 
-    *pos = 0;
-    *current_header = None;
+    info.record_offset += info.pos;
+    info.pos = 0;
+    info.current_header = None;
 
     Ok(slice)
 }
 
 fn write_record<'a, CipherSuite>(
     buffer: &'a mut [u8],
-    pos: &mut usize,
-    current_header: &mut Option<ClientRecordHeader>,
+    info: &mut WriteBufferInfo,
     record: &ClientRecord<CipherSuite>,
     write_key_schedule: &mut WriteKeySchedule<CipherSuite>,
     read_key_schedule: Option<&mut ReadKeySchedule<CipherSuite>>,
@@ -267,12 +325,18 @@ fn write_record<'a, CipherSuite>(
 where
     CipherSuite: TlsCipherSuite,
 {
-    if current_header.is_some() {
+    if info.current_header.is_some() {
         return Err(TlsError::InternalError);
     }
 
-    start_record(buffer, pos, current_header, record.header())?;
-    with_buffer(buffer, pos, |buf| {
+    // In a non-blocking context, starting a record could fail due to insufficient buffer space.
+    start_record(buffer, info, record.header())?;
+
+    // FIXME: these records can be longer than what we have reserved.
+    // At this point, we are committed - we can't bail out with
+    // `TlsError::WouldBlock` if the buffer is too small.
+
+    with_buffer(buffer, info, |buf| {
         let mut buf = buf.forward();
         record.encode_payload(&mut buf)?;
 
@@ -283,5 +347,6 @@ where
         record.finish_record(&mut buf, transcript, write_key_schedule)?;
         Ok(buf.rewind())
     })?;
-    close_record(buffer, pos, current_header, write_key_schedule)
+    close_record(buffer, info, write_key_schedule)
+        .inspect_err(|e| assert!(!matches!(e, TlsError::WouldBlock)))
 }

@@ -48,6 +48,13 @@ impl TryInto<&'static dyn pki_types::SignatureVerificationAlgorithm> for Signatu
             | SignatureScheme::RsaPssPssSha384
             | SignatureScheme::RsaPssPssSha512 => Err(TlsError::InvalidSignatureScheme),
 
+            /* RFC8734: Elliptic Curve Cryptography (ECC) Brainpool Curves for Transport Layer Security (TLS) Version 1.3 */
+            SignatureScheme::EcdsaBrainpoolP256r1tls13Sha256
+            | SignatureScheme::EcdsaBrainpoolP384r1tls13Sha384
+            | SignatureScheme::EcdsaBrainpoolP512r1tls13Sha512 => {
+                Err(TlsError::InvalidSignatureScheme)
+            }
+
             /* Legacy algorithms */
             SignatureScheme::RsaPkcs1Sha1 | SignatureScheme::EcdsaSha1 => {
                 Err(TlsError::InvalidSignatureScheme)
@@ -106,6 +113,13 @@ impl TryInto<&'static dyn pki_types::SignatureVerificationAlgorithm> for Signatu
             SignatureScheme::RsaPssPssSha256 => Err(TlsError::InvalidSignatureScheme),
             SignatureScheme::RsaPssPssSha384 => Err(TlsError::InvalidSignatureScheme),
             SignatureScheme::RsaPssPssSha512 => Err(TlsError::InvalidSignatureScheme),
+
+            /* RFC8734: Elliptic Curve Cryptography (ECC) Brainpool Curves for Transport Layer Security (TLS) Version 1.3 */
+            SignatureScheme::EcdsaBrainpoolP256r1tls13Sha256
+            | SignatureScheme::EcdsaBrainpoolP384r1tls13Sha384
+            | SignatureScheme::EcdsaBrainpoolP512r1tls13Sha512 => {
+                Err(TlsError::InvalidSignatureScheme)
+            }
 
             /* Legacy algorithms */
             SignatureScheme::RsaPkcs1Sha1 => Err(TlsError::InvalidSignatureScheme),
