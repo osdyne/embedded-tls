@@ -12,62 +12,20 @@
 #include <assert.h>
 
 #define CHECK(x) assert((x) >= 0)
-#define LOOP_CHECK(rval, cmd) \
-	do {                  \
-		rval = cmd;   \
+#define LOOP_CHECK(rval, cmd)						\
+	do {								\
+		rval = cmd;						\
 	} while (rval == GNUTLS_E_AGAIN || rval == GNUTLS_E_INTERRUPTED)
 
 #define MAX_BUF 1024
 
-int gnutlsserver_run(int port, char *privkey_file, char *certs_file)
-{
+int gnutlsserver_init(int port) {
 	int listen_sd;
-	int sd, ret;
-	gnutls_certificate_credentials_t x509_cred;
-	gnutls_priority_t priority_cache;
 	struct sockaddr_in sa_serv;
-	struct sockaddr_in sa_cli;
-	socklen_t client_len;
-	char topbuf[512];
-	gnutls_session_t session;
-	char buffer[MAX_BUF + 1];
 	int optval = 1;
 
 	/* for backwards compatibility with gnutls < 3.3.0 */
 	CHECK(gnutls_global_init());
-
-	CHECK(gnutls_certificate_allocate_credentials(&x509_cred));
-
-	/* The following code sets the certificate key pair as well as, 
-	 * an OCSP response which corresponds to it. It is possible
-	 * to set multiple key-pairs and multiple OCSP status responses
-	 * (the latter since 3.5.6). See the manual pages of the individual
-	 * functions for more information.
-	 */
-	CHECK(gnutls_certificate_set_x509_key_file(
-                x509_cred, certs_file, privkey_file, GNUTLS_X509_FMT_PEM
-        ));
-
-        gnutls_certificate_set_verify_flags(
-		x509_cred, GNUTLS_VERIFY_DISABLE_CRL_CHECKS
-	);
-
-	CHECK(gnutls_priority_init(&priority_cache, NULL, NULL));
-
-	/* Instead of the default options as shown above one could specify
-	 * additional options such as server precedence in ciphersuite selection
-	 * as follows:
-	 * gnutls_priority_init2(&priority_cache,
-	 *                       "%SERVER_PRECEDENCE",
-	 *                       NULL, GNUTLS_PRIORITY_INIT_DEF_APPEND);
-	 */
-
-#if GNUTLS_VERSION_NUMBER >= 0x030506
-	/* only available since GnuTLS 3.5.6, on previous versions see
-	 * gnutls_certificate_set_dh_params(). */
-	gnutls_certificate_set_known_dh_params(x509_cred,
-					       GNUTLS_SEC_PARAM_MEDIUM);
-#endif
 
 	/* Socket operations
 	 */
@@ -87,7 +45,52 @@ int gnutlsserver_run(int port, char *privkey_file, char *certs_file)
 
 	fprintf(stderr, "Server ready. Listening to port '%d'.\n\n", port);
 
-	client_len = sizeof(sa_cli);
+        return listen_sd;
+}
+
+int gnutlsserver_run(int listen_sd, char *privkey_file, char *certs_file) {
+	char topbuf[512];
+	gnutls_session_t session;
+	char buffer[MAX_BUF + 1];
+	int sd, ret;
+	struct sockaddr_in sa_cli;
+	socklen_t client_len = sizeof(sa_cli);
+        gnutls_certificate_credentials_t x509_cred;
+	gnutls_priority_t priority_cache;
+
+	CHECK(gnutls_certificate_allocate_credentials(&x509_cred));
+
+	/* The following code sets the certificate key pair as well as, 
+	 * an OCSP response which corresponds to it. It is possible
+	 * to set multiple key-pairs and multiple OCSP status responses
+	 * (the latter since 3.5.6). See the manual pages of the individual
+	 * functions for more information.
+	 */
+	CHECK(gnutls_certificate_set_x509_key_file(
+		      x509_cred, certs_file, privkey_file, GNUTLS_X509_FMT_PEM
+		      ));
+
+        gnutls_certificate_set_verify_flags(
+		x509_cred, GNUTLS_VERIFY_DISABLE_CRL_CHECKS
+		);
+
+	/* Instead of the default options as shown above one could specify
+	 * additional options such as server precedence in ciphersuite selection
+	 * as follows:
+	 * gnutls_priority_init2(&priority_cache,
+	 *                       "%SERVER_PRECEDENCE",
+	 *                       NULL, GNUTLS_PRIORITY_INIT_DEF_APPEND);
+	 */
+
+#if GNUTLS_VERSION_NUMBER >= 0x030506
+	/* only available since GnuTLS 3.5.6, on previous versions see
+	 * gnutls_certificate_set_dh_params(). */
+	gnutls_certificate_set_known_dh_params(x509_cred,
+					       GNUTLS_SEC_PARAM_MEDIUM);
+#endif
+
+	CHECK(gnutls_priority_init(&priority_cache, NULL, NULL));
+
 	for (;;) {
 		CHECK(gnutls_init(&session, GNUTLS_SERVER));
 		CHECK(gnutls_priority_set(session, priority_cache));
@@ -107,9 +110,9 @@ int gnutlsserver_run(int port, char *privkey_file, char *certs_file)
 		sd = accept(listen_sd, (struct sockaddr *)&sa_cli, &client_len);
 
 		fprintf(stderr, "- connection from %s, port %d\n",
-		       inet_ntop(AF_INET, &sa_cli.sin_addr, topbuf,
-				 sizeof(topbuf)),
-		       ntohs(sa_cli.sin_port));
+			inet_ntop(AF_INET, &sa_cli.sin_addr, topbuf,
+				  sizeof(topbuf)),
+			ntohs(sa_cli.sin_port));
 
 		gnutls_transport_set_int(session, sd);
 
