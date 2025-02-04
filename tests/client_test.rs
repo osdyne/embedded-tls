@@ -8,6 +8,7 @@ use std::net::SocketAddr;
 use std::sync::Once;
 
 mod tlsserver;
+#[cfg(target_os = "unix")]
 mod gnutlsserver;
 
 static LOG_INIT: Once = Once::new();
@@ -419,6 +420,7 @@ fn test_blocking_ping_nocopy_bufread() {
         .expect("error closing session");
 }
 
+#[cfg(target_os = "unix")]
 #[tokio::test]
 async fn test_gnutls() {
     use embedded_tls::*;
@@ -488,6 +490,7 @@ async fn test_gnutls() {
         .expect("error closing session");
 }
 
+#[cfg(target_os = "unix")]
 #[tokio::test]
 async fn test_gnutls_record_size_limit() {
     use embedded_tls::*;
@@ -558,6 +561,7 @@ async fn test_gnutls_record_size_limit() {
         .expect("error closing session");
 }
 
+#[cfg(target_os = "unix")]
 #[tokio::test]
 async fn test_gnutls_record_size_limit_handshake_fail() {
     use embedded_tls::*;

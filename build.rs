@@ -1,4 +1,4 @@
-#[cfg(target_family = "unix")]
+#[cfg(target_os = "unix")]
 fn setup_gnutls() {
     pkg_config::Config::new()
         // gnutls version that added "record size limit"
@@ -13,7 +13,7 @@ fn setup_gnutls() {
 }
 
 fn main() {
-    #[cfg(target_family = "unix")]
+    #[cfg(target_os = "unix")]
     setup_gnutls();
 
     println!("cargo:rerun-if-changed=build.rs");
