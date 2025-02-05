@@ -8,6 +8,9 @@ extern "C" {
     fn gnutlsserver_run(listen_sd: c_int, privkey_file: *const c_char, certs_file: *const c_char) -> c_int;
 }
 
+/// Start a echoing gnutls server
+///
+/// Returns once it listens on a TCP port.
 pub fn setup() -> SocketAddr {
     let addr: SocketAddr = "127.0.0.1:12346".parse().unwrap();
 
