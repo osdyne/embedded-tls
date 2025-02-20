@@ -19,7 +19,10 @@ pub use sha2::Sha256;
 pub use sha2::Sha384;
 use typenum::{Sum, U10, U12, U16, U32};
 
-pub use crate::extensions::extension_data::max_fragment_length::MaxFragmentLength;
+pub use crate::extensions::extension_data::{
+    max_fragment_length::MaxFragmentLength,
+    record_size_limit::RecordSizeLimit,
+};
 
 pub const TLS_RECORD_OVERHEAD: usize = 128;
 
@@ -127,6 +130,7 @@ pub struct TlsConfig<'a> {
     pub(crate) signature_schemes: Vec<SignatureScheme, 19>,
     pub(crate) named_groups: Vec<NamedGroup, 16>,
     pub(crate) max_fragment_length: Option<MaxFragmentLength>,
+    pub(crate) record_size_limit: Option<RecordSizeLimit>,
     pub(crate) ca: Option<Certificate<'a>>,
     pub(crate) cert: Option<Certificate<'a>>,
     pub(crate) priv_key: &'a [u8],
@@ -262,6 +266,7 @@ impl<'a> TlsConfig<'a> {
             signature_schemes: Vec::new(),
             named_groups: Vec::new(),
             max_fragment_length: None,
+            record_size_limit: None,
             psk: None,
             server_name: None,
             ca: None,
@@ -348,6 +353,16 @@ impl<'a> TlsConfig<'a> {
     /// Resets the max fragment length to 14 bits (16384).
     pub fn reset_max_fragment_length(mut self) -> Self {
         self.max_fragment_length = None;
+        self
+    }
+
+    pub fn with_record_size_limit(mut self, record_size_limit: RecordSizeLimit) -> Self {
+        self.record_size_limit = Some(record_size_limit);
+        self
+    }
+
+    pub fn reset_record_size_limit(mut self) -> Self {
+        self.record_size_limit = None;
         self
     }
 

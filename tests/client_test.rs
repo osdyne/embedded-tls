@@ -8,6 +8,8 @@ use std::net::SocketAddr;
 use std::sync::Once;
 
 mod tlsserver;
+#[cfg(target_os = "unix")]
+mod gnutlsserver;
 
 static LOG_INIT: Once = Once::new();
 static INIT: Once = Once::new();
@@ -414,6 +416,187 @@ fn test_blocking_ping_nocopy_bufread() {
     tls.consume(len);
 
     tls.close()
+        .map_err(|(_, e)| e)
+        .expect("error closing session");
+}
+
+#[cfg(target_os = "unix")]
+#[tokio::test]
+async fn test_gnutls() {
+    use embedded_tls::*;
+    use tokio::net::TcpStream;
+    let addr = gnutlsserver::setup();
+    let pem = include_str!("data/ca-cert.pem");
+    let der = pem_parser::pem_to_der(pem);
+
+    let stream = TcpStream::connect(addr)
+        .await
+        .expect("error connecting to server");
+
+    log::info!("Connected");
+    let mut read_record_buffer = [0; 16384];
+    let mut write_record_buffer = [0; 16384];
+    let config = TlsConfig::new()
+        .with_ca(Certificate::X509(&der[..]))
+        .with_server_name("localhost");
+
+    let mut tls = TlsConnection::new(
+        FromTokio::new(stream),
+        &mut read_record_buffer,
+        &mut write_record_buffer,
+    );
+
+    log::info!("SIZE of connection is {}", core::mem::size_of_val(&tls));
+
+    let open_fut = tls.open(TlsContext::new(
+        &config,
+        UnsecureProvider::new::<Aes128GcmSha256>(OsRng),
+    ));
+    log::info!("SIZE of open fut is {}", core::mem::size_of_val(&open_fut));
+    open_fut.await.expect("error establishing TLS connection");
+    log::info!("Established");
+
+    let write_fut = tls.write(b"ping");
+    log::info!(
+        "SIZE of write fut is {}",
+        core::mem::size_of_val(&write_fut)
+    );
+    write_fut.await.expect("error writing data");
+    tls.flush().await.expect("error flushing data");
+
+    // Make sure reading into a 0 length buffer doesn't loop
+    let mut rx_buf = [0; 0];
+    let read_fut = tls.read(&mut rx_buf);
+    log::info!("SIZE of read fut is {}", core::mem::size_of_val(&read_fut));
+    let sz = read_fut.await.expect("error reading data");
+    assert_eq!(sz, 0);
+
+    let mut rx_buf = [0; 4096];
+    let read_fut = tls.read(&mut rx_buf);
+    log::info!("SIZE of read fut is {}", core::mem::size_of_val(&read_fut));
+    let sz = read_fut.await.expect("error reading data");
+    assert_eq!(4, sz);
+    assert_eq!(b"ping", &rx_buf[..sz]);
+    log::info!("Read {} bytes: {:?}", sz, &rx_buf[..sz]);
+
+    // Test that embedded-tls doesn't block if the buffer is empty.
+    let mut rx_buf = [0; 0];
+    let sz = tls.read(&mut rx_buf).await.expect("error reading data");
+    assert_eq!(sz, 0);
+
+    tls.close()
+        .await
+        .map_err(|(_, e)| e)
+        .expect("error closing session");
+}
+
+#[cfg(target_os = "unix")]
+#[tokio::test]
+async fn test_gnutls_record_size_limit() {
+    use embedded_tls::*;
+    use tokio::net::TcpStream;
+    let addr = gnutlsserver::setup();
+    let pem = include_str!("data/ca-cert.pem");
+    let der = pem_parser::pem_to_der(pem);
+
+    let stream = TcpStream::connect(addr)
+        .await
+        .expect("error connecting to server");
+
+    log::info!("Connected");
+    let mut read_record_buffer = [0; 16384];
+    let mut write_record_buffer = [0; 16384];
+    let config = TlsConfig::new()
+        .with_ca(Certificate::X509(&der[..]))
+        .with_server_name("localhost")
+        .with_record_size_limit(RecordSizeLimit(128));
+
+    let mut tls = TlsConnection::new(
+        FromTokio::new(stream),
+        &mut read_record_buffer,
+        &mut write_record_buffer,
+    );
+
+    log::info!("SIZE of connection is {}", core::mem::size_of_val(&tls));
+
+    let open_fut = tls.open(TlsContext::new(
+        &config,
+        UnsecureProvider::new::<Aes128GcmSha256>(OsRng),
+    ));
+    log::info!("SIZE of open fut is {}", core::mem::size_of_val(&open_fut));
+    open_fut.await.expect("error establishing TLS connection");
+    log::info!("Established");
+
+    let write_fut = tls.write(b"ping");
+    log::info!(
+        "SIZE of write fut is {}",
+        core::mem::size_of_val(&write_fut)
+    );
+    write_fut.await.expect("error writing data");
+    tls.flush().await.expect("error flushing data");
+
+    // Make sure reading into a 0 length buffer doesn't loop
+    let mut rx_buf = [0; 0];
+    let read_fut = tls.read(&mut rx_buf);
+    log::info!("SIZE of read fut is {}", core::mem::size_of_val(&read_fut));
+    let sz = read_fut.await.expect("error reading data");
+    assert_eq!(sz, 0);
+
+    let mut rx_buf = [0; 4096];
+    let read_fut = tls.read(&mut rx_buf);
+    log::info!("SIZE of read fut is {}", core::mem::size_of_val(&read_fut));
+    let sz = read_fut.await.expect("error reading data");
+    assert_eq!(4, sz);
+    assert_eq!(b"ping", &rx_buf[..sz]);
+    log::info!("Read {} bytes: {:?}", sz, &rx_buf[..sz]);
+
+    // Test that embedded-tls doesn't block if the buffer is empty.
+    let mut rx_buf = [0; 0];
+    let sz = tls.read(&mut rx_buf).await.expect("error reading data");
+    assert_eq!(sz, 0);
+
+    tls.close()
+        .await
+        .map_err(|(_, e)| e)
+        .expect("error closing session");
+}
+
+#[cfg(target_os = "unix")]
+#[tokio::test]
+async fn test_gnutls_record_size_limit_handshake_fail() {
+    use embedded_tls::*;
+    use tokio::net::TcpStream;
+    let addr = gnutlsserver::setup();
+    let pem = include_str!("data/ca-cert.pem");
+    let der = pem_parser::pem_to_der(pem);
+
+    let stream = TcpStream::connect(addr)
+        .await
+        .expect("error connecting to server");
+
+    log::info!("Connected");
+    let mut read_record_buffer = [0; 16384];
+    let mut write_record_buffer = [0; 16384];
+    let config = TlsConfig::new()
+        .with_ca(Certificate::X509(&der[..]))
+        .with_server_name("localhost")
+        // Too small, will make `open_fut` fail
+        .with_record_size_limit(RecordSizeLimit(8));
+
+    let mut tls = TlsConnection::new(
+        FromTokio::new(stream),
+        &mut read_record_buffer,
+        &mut write_record_buffer,
+    );
+
+    let open_fut = tls.open(TlsContext::new(
+        &config,
+        UnsecureProvider::new::<Aes128GcmSha256>(OsRng),
+    ));
+    assert!(open_fut.await.is_err());
+
+    tls.close()
+        .await
         .map_err(|(_, e)| e)
         .expect("error closing session");
 }

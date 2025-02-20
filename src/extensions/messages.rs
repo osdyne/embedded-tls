@@ -13,6 +13,7 @@ use crate::extensions::{
     },
     extension_group_macro::extension_group,
 };
+use crate::RecordSizeLimit;
 
 // Source: https://www.rfc-editor.org/rfc/rfc8446#section-4.2 table, rows marked with CH
 extension_group! {
@@ -26,6 +27,7 @@ extension_group! {
         PskKeyExchangeModes(PskKeyExchangeModes<4>),
         SignatureAlgorithmsCert(SignatureAlgorithmsCert<19>),
         MaxFragmentLength(MaxFragmentLength),
+        RecordSizeLimit(RecordSizeLimit),
         StatusRequest(Unimplemented<'a>),
         UseSrtp(Unimplemented<'a>),
         Heartbeat(Unimplemented<'a>),
@@ -63,6 +65,7 @@ extension_group! {
         ApplicationLayerProtocolNegotiation(Unimplemented<'a>),
         ClientCertificateType(Unimplemented<'a>),
         ServerCertificateType(Unimplemented<'a>),
+        RecordSizeLimit(RecordSizeLimit),
         EarlyData(Unimplemented<'a>)
     }
 }

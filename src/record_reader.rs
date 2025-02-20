@@ -19,7 +19,7 @@ pub struct RecordReader<'a> {
 impl<'a> RecordReader<'a> {
     pub fn new(buf: &'a mut [u8]) -> Self {
         if buf.len() < 16640 {
-            warn!("Read buffer is smaller than 16640 bytes, which may cause problems!");
+            info!("Read buffer is {}, smaller than 16640 bytes, which may no longer cause problems", buf.len());
         }
         Self {
             buf,

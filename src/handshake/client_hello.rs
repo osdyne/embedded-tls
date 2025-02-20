@@ -13,6 +13,7 @@ use crate::extensions::extension_data::pre_shared_key::PreSharedKeyClientHello;
 use crate::extensions::extension_data::psk_key_exchange_modes::{
     PskKeyExchangeMode, PskKeyExchangeModes,
 };
+use crate::extensions::extension_data::record_size_limit;
 use crate::extensions::extension_data::server_name::ServerNameList;
 use crate::extensions::extension_data::signature_algorithms::SignatureAlgorithms;
 use crate::extensions::extension_data::supported_groups::{NamedGroup, SupportedGroups};
@@ -95,6 +96,9 @@ where
 
             if let Some(max_fragment_length) = self.config.max_fragment_length {
                 ClientHelloExtension::MaxFragmentLength(max_fragment_length).encode(buf)?;
+            }
+            if let Some(record_size_limit) = self.config.record_size_limit {
+                ClientHelloExtension::RecordSizeLimit(record_size_limit).encode(buf)?;
             }
 
             ClientHelloExtension::SupportedGroups(SupportedGroups {
