@@ -250,16 +250,12 @@ pub fn read_nonblocking<'m, CipherSuite: TlsCipherSuite>(
 ) -> Result<ServerRecord<'m, CipherSuite>, TlsError> {
     // Ensure that the header is in the buffer.
     ensure_nonblocking(*pending, RecordHeader::LEN)?;
-    let header = RecordHeader::decode(
-        buf[*decoded..*decoded + RecordHeader::LEN]
-            .try_into()
-            .unwrap(),
-    )?;
+    let header = RecordHeader::decode(buf[*decoded..][..RecordHeader::LEN].try_into().unwrap())?;
 
     // Ensure that the full TLS record is present in the buffer.
     ensure_nonblocking(*pending, RecordHeader::LEN + header.content_length())?;
 
-    consume(
+    consume_nonblocking(
         buf,
         decoded,
         pending,
@@ -291,6 +287,26 @@ fn consume<'m, CipherSuite: TlsCipherSuite>(
 
     *decoded += content_len;
     *pending -= content_len;
+
+    ServerRecord::decode(header, slice, digest)
+}
+
+// The latest embedded-tls code does not read the header into `buf` anymore.
+// The nonblocking code still does that, hence our `consume` function also needs to skip the
+// header.
+fn consume_nonblocking<'m, CipherSuite: TlsCipherSuite>(
+    buf: &'m mut [u8],
+    decoded: &mut usize,
+    pending: &mut usize,
+    header: RecordHeader,
+    digest: &mut CipherSuite::Hash,
+) -> Result<ServerRecord<'m, CipherSuite>, TlsError> {
+    let content_len = header.content_length();
+
+    let slice = &mut buf[*decoded + RecordHeader::LEN..][..content_len];
+
+    *decoded += RecordHeader::LEN + content_len;
+    *pending -= RecordHeader::LEN + content_len;
 
     ServerRecord::decode(header, slice, digest)
 }
