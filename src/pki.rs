@@ -177,6 +177,7 @@ fn verify_signature(
     match verify.signature_scheme {
         SignatureScheme::EcdsaSecp256r1Sha256 => {
             use p256::ecdsa::{Signature, VerifyingKey, signature::Verifier};
+
             let verifying_key =
                 VerifyingKey::from_sec1_bytes(public_key).map_err(|_| TlsError::DecodeError)?;
             let signature =
@@ -185,6 +186,7 @@ fn verify_signature(
         }
         SignatureScheme::EcdsaSecp384r1Sha384 => {
             use p384::ecdsa::{Signature, VerifyingKey, signature::Verifier};
+
             let verifying_key =
                 VerifyingKey::from_sec1_bytes(public_key).map_err(|_| TlsError::DecodeError)?;
             let signature =
@@ -192,10 +194,12 @@ fn verify_signature(
             verified = verifying_key.verify(message, &signature).is_ok();
         }
         SignatureScheme::Ed25519 => {
-            use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+            use ed25519_dalek::{PUBLIC_KEY_LENGTH, Signature, Verifier, VerifyingKey};
+
+            let public_key = <&[u8; PUBLIC_KEY_LENGTH]>::try_from(public_key)
+                .map_err(|_| TlsError::DecodeError)?;
             let verifying_key: VerifyingKey =
-                VerifyingKey::from_bytes(public_key.try_into().unwrap())
-                    .map_err(|_| TlsError::DecodeError)?;
+                VerifyingKey::from_bytes(public_key).map_err(|_| TlsError::DecodeError)?;
             let signature =
                 Signature::try_from(verify.signature).map_err(|_| TlsError::DecodeError)?;
             verified = verifying_key.verify(message, &signature).is_ok();
@@ -210,7 +214,8 @@ fn verify_signature(
             };
             use sha2::Sha256;
 
-            let der_pubkey = RsaPublicKey::from_pkcs1_der(public_key).unwrap();
+            let der_pubkey =
+                RsaPublicKey::from_pkcs1_der(public_key).map_err(|_| TlsError::DecodeError)?;
             let verifying_key = VerifyingKey::<Sha256>::from(der_pubkey);
 
             let signature =
@@ -339,6 +344,7 @@ fn verify_certificate(
         match parsed_certificate.signature_algorithm {
             ECDSA_SHA256 => {
                 use p256::ecdsa::{Signature, VerifyingKey, signature::Verifier};
+
                 let verifying_key = VerifyingKey::from_sec1_bytes(ca_public_key)
                     .map_err(|_| TlsError::DecodeError)?;
 
@@ -354,6 +360,7 @@ fn verify_certificate(
             }
             ECDSA_SHA384 => {
                 use p384::ecdsa::{Signature, VerifyingKey, signature::Verifier};
+
                 let verifying_key = VerifyingKey::from_sec1_bytes(ca_public_key)
                     .map_err(|_| TlsError::DecodeError)?;
 
@@ -368,10 +375,12 @@ fn verify_certificate(
                 verified = verifying_key.verify(&certificate_data, &signature).is_ok();
             }
             ED25519 => {
-                use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+                use ed25519_dalek::{PUBLIC_KEY_LENGTH, Signature, Verifier, VerifyingKey};
+
+                let ca_public_key = <&[u8; PUBLIC_KEY_LENGTH]>::try_from(ca_public_key)
+                    .map_err(|_| TlsError::DecodeError)?;
                 let verifying_key: VerifyingKey =
-                    VerifyingKey::from_bytes(ca_public_key.try_into().unwrap())
-                        .map_err(|_| TlsError::DecodeError)?;
+                    VerifyingKey::from_bytes(ca_public_key).map_err(|_| TlsError::DecodeError)?;
 
                 let signature = Signature::try_from(
                     parsed_certificate
@@ -393,7 +402,8 @@ fn verify_certificate(
                 };
                 use sha2::Sha256;
 
-                let der_pubkey = RsaPublicKey::from_pkcs1_der(ca_public_key).unwrap();
+                let der_pubkey = RsaPublicKey::from_pkcs1_der(ca_public_key)
+                    .map_err(|_| TlsError::DecodeError)?;
                 let verifying_key = VerifyingKey::<Sha256>::from(der_pubkey);
 
                 let signature = Signature::try_from(
@@ -419,7 +429,8 @@ fn verify_certificate(
                 };
                 use sha2::Sha384;
 
-                let der_pubkey = RsaPublicKey::from_pkcs1_der(ca_public_key).unwrap();
+                let der_pubkey = RsaPublicKey::from_pkcs1_der(ca_public_key)
+                    .map_err(|_| TlsError::DecodeError)?;
                 let verifying_key = VerifyingKey::<Sha384>::from(der_pubkey);
 
                 let signature = Signature::try_from(
@@ -442,7 +453,8 @@ fn verify_certificate(
                 };
                 use sha2::Sha512;
 
-                let der_pubkey = RsaPublicKey::from_pkcs1_der(ca_public_key).unwrap();
+                let der_pubkey = RsaPublicKey::from_pkcs1_der(ca_public_key)
+                    .map_err(|_| TlsError::DecodeError)?;
                 let verifying_key = VerifyingKey::<Sha512>::from(der_pubkey);
 
                 let signature = Signature::try_from(
