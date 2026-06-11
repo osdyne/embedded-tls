@@ -135,6 +135,7 @@ pub struct Certificate<const N: usize> {
 }
 
 impl<const N: usize> Certificate<N> {
+    #[must_use]
     pub fn request_context(&self) -> &[u8] {
         &self.request_context[..]
     }

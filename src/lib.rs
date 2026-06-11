@@ -75,9 +75,11 @@ mod write_buffer;
 
 pub use config::UnsecureProvider;
 pub use extensions::extension_data::signature_algorithms::SignatureScheme;
-pub use handshake::certificate::{
-    Certificate as OwnedCertificate, CertificateEntryRef, CertificateRef as ServerCertificate,
-};
+// The owned certificate type lives in the private `handshake` module and is not
+// reachable via `config::*` (which only re-exports the borrowed `CertificateRef`/
+// `CertificateEntryRef` and the config `Certificate` enum). Expose it for external
+// `TlsVerifier`/`CryptoProvider` implementors that need to own a parsed server cert.
+pub use handshake::certificate::Certificate as OwnedCertificate;
 pub use handshake::certificate_verify::CertificateVerify;
 pub use rand_core::{CryptoRng, CryptoRngCore};
 

@@ -4,11 +4,11 @@ use crate::key_schedule::{KeySchedule, ReadKeySchedule, WriteKeySchedule};
 use crate::record::{ClientRecord, ServerRecord};
 use crate::record_reader::RecordReader;
 use crate::write_buffer::WriteBuffer;
+use crate::{CertificateVerify, CryptoProvider, TlsError, TlsVerifier};
 use crate::{
     alert::{Alert, AlertDescription, AlertLevel},
     handshake::{certificate::CertificateRef, certificate_request::CertificateRequest},
 };
-use crate::{CertificateVerify, CryptoProvider, TlsError, TlsVerifier};
 use core::fmt::Debug;
 use digest::Digest;
 use embedded_io::Error as _;
@@ -307,7 +307,7 @@ impl<'a> State {
     /// fatal. Given that these have a finite length, with a sufficiently
     /// sized TX buffer this should not happen.
     #[allow(clippy::too_many_arguments)]
-    pub fn process_nonblocking<'v, Provider>(
+    pub fn process_nonblocking<Provider>(
         self,
         handshake: &mut Handshake<Provider::CipherSuite>,
         record_reader: &mut RecordReader<'_>,
@@ -353,8 +353,7 @@ impl<'a> State {
                 Ok(state)
             }
             State::ClientCertVerify => {
-                let (result, _) =
-                    client_cert_verify(key_schedule, crypto_provider, tx_buf)?;
+                let (result, _) = client_cert_verify(key_schedule, crypto_provider, tx_buf)?;
 
                 key_schedule.write_state().increment_counter();
 

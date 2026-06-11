@@ -58,6 +58,7 @@ impl<'a> Workbuf<'a> {
     // - the number of used received bytes (that must not be re-presented next time),
     // - the number of completed TX bytes (that must not be re-presented next time),
     // - the remaining pending bytes, that _must_ be represented next time.
+    #[must_use]
     pub fn disassemble(self) -> (usize, usize, WriteBufferInfo) {
         let (tx_complete, info) = self.write_buffer.into_info();
 
@@ -76,6 +77,7 @@ impl<'a> Workbuf<'a> {
 
     // Returns the number of submitted TX bytes that must not be presented as a
     // workbuf again (i.e. must be sent to the remote side).
+    #[must_use]
     pub fn tx_used(&self) -> usize {
         self.write_buffer.reborrow().len()
     }
@@ -86,6 +88,7 @@ where
     CipherSuite: TlsCipherSuite + 'static,
 {
     /// Create a new TLS connection for use in a non-blocking scenario.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             opened: false,
@@ -208,11 +211,7 @@ where
     }
 
     /// Read and decrypt data filling the provided slice.
-    pub fn read<'a, 'b>(
-        &mut self,
-        workbuf: &'a mut Workbuf<'b>,
-        buf: &mut [u8],
-    ) -> Result<usize, TlsError> {
+    pub fn read(&mut self, workbuf: &mut Workbuf<'_>, buf: &mut [u8]) -> Result<usize, TlsError> {
         if buf.is_empty() {
             return Ok(0);
         }
@@ -253,10 +252,7 @@ where
         }
     }
 
-    fn read_application_data<'a>(
-        &mut self,
-        record_reader: &mut RecordReader,
-    ) -> Result<(), TlsError> {
+    fn read_application_data(&mut self, record_reader: &mut RecordReader) -> Result<(), TlsError> {
         assert!(self.decrypted.is_empty());
         let buf_ptr_range = record_reader.buf.as_ptr_range();
         let key_schedule = self.key_schedule.read_state();
@@ -278,6 +274,11 @@ where
     /// buffers). The RX side consiststs of 0..n bytes of an already
     /// decrypted TLS application data record (left over by a previous call),
     /// and 0..n bytes of additional received TLS data.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a workbuf is already checked out (i.e. [`Self::take_workbuf`]
+    /// was called without a matching [`Self::put_workbuf`]).
     pub fn take_workbuf<'a>(
         &mut self,
         read_buffer: &'a mut [u8],
@@ -293,10 +294,11 @@ where
         )
     }
 
+    #[must_use]
     pub fn pending_write(&self) -> Option<usize> {
         self.write_buffer_info
             .as_ref()
-            .map(|write_buffer_info| write_buffer_info.pending_bytes())
+            .map(WriteBufferInfo::pending_bytes)
     }
 
     // The returned rx_used, tx_complete bytes shall NOT be re-presented in the next "take_workbuf"
@@ -322,7 +324,7 @@ where
         (rx_bytes_to_drop, tx_complete)
     }
 
-    pub fn close<'b, 'c>(&mut self, workbuf: &'c mut Workbuf<'b>) -> Result<(), TlsError> {
+    pub fn close(&mut self, workbuf: &mut Workbuf<'_>) -> Result<(), TlsError> {
         // Try to flush. If that fails, return.
         self.flush(workbuf)?;
 
@@ -339,5 +341,39 @@ where
         self.flush(workbuf)?;
 
         Ok(())
+    }
+}
+
+impl<CipherSuite> Default for TlsConnection<CipherSuite>
+where
+    CipherSuite: TlsCipherSuite + 'static,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::TlsConnection;
+    use crate::TlsError;
+    use crate::config::Aes128GcmSha256;
+
+    #[test]
+    fn io_before_handshake_is_rejected() {
+        let mut tls: TlsConnection<Aes128GcmSha256> = TlsConnection::new();
+        let mut rx = [0u8; 256];
+        let mut tx = [0u8; 256];
+        let mut workbuf = tls.take_workbuf(&mut rx, &mut tx);
+
+        assert!(matches!(
+            tls.write(b"ping", &mut workbuf),
+            Err(TlsError::MissingHandshake)
+        ));
+        let mut out = [0u8; 4];
+        assert!(matches!(
+            tls.read(&mut workbuf, &mut out),
+            Err(TlsError::MissingHandshake)
+        ));
     }
 }

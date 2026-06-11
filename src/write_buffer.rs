@@ -13,6 +13,7 @@ pub struct WriteBufferInfo {
     /// Current submitted position (closed records that are ready to be transmitted).
     record_offset: usize,
     current_header: Option<ClientRecordHeader>,
+    nonblocking: bool,
 }
 
 impl WriteBufferInfo {
@@ -21,6 +22,7 @@ impl WriteBufferInfo {
             pos: 0,
             record_offset: 0,
             current_header: None,
+            nonblocking: true,
         }
     }
 
@@ -56,12 +58,13 @@ impl<'a> WriteBuffer<'a> {
                 pos: 0,
                 record_offset: 0,
                 current_header: None,
+                nonblocking: false,
             },
         }
     }
 
     /// Reassembles a write buffer in a non-blocking context.
-    /// Unlike the usage of the WriteBuffer in the blocking variant, this does not require
+    /// Unlike the usage of the `WriteBuffer` in the blocking variant, this does not require
     /// there to be sufficient space in the write buffer for the TLS record overhead;
     /// `start_record()` and `close_record()` will return `TlsError::WouldBlock` in these cases.
     pub fn from_info(buffer: &'a mut [u8], info: WriteBufferInfo) -> Self {
@@ -71,7 +74,7 @@ impl<'a> WriteBuffer<'a> {
 
     /// Removes the buffer reference, only retains the buffer info. Returns the
     /// number of completed (`record_offset`) octets, and fixes up the returned
-    /// WriteBufferInfo to accomodate the dropped octets.
+    /// `WriteBufferInfo` to accomodate the dropped octets.
     pub fn into_info(self) -> (usize, WriteBufferInfo) {
         (
             self.info.record_offset,
@@ -308,7 +311,13 @@ where
 
     let slice = &buffer[info.record_offset..info.record_offset + info.pos];
 
-    info.record_offset += info.pos;
+    // In non-blocking mode, multiple records can be accumulated and will
+    // eventually be flushed by the caller; in blocking/async mode, no accumulation
+    // happens and the caller of `close_record` is responsible to transmit the
+    // generated record.
+    if info.nonblocking {
+        info.record_offset += info.pos;
+    }
     info.pos = 0;
     info.current_header = None;
 
@@ -349,4 +358,111 @@ where
     })?;
     close_record(buffer, info, write_key_schedule)
         .inspect_err(|e| assert!(!matches!(e, TlsError::WouldBlock)))
+}
+
+#[cfg(test)]
+mod nonblocking_test {
+    use super::{WriteBuffer, WriteBufferInfo};
+    use crate::Aes128GcmSha256;
+    use crate::TlsError;
+    use crate::config::TLS_RECORD_OVERHEAD;
+    use crate::key_schedule::KeySchedule;
+    use crate::record::ClientRecordHeader;
+
+    #[test]
+    fn empty_info_has_no_pending_bytes() {
+        assert_eq!(WriteBufferInfo::empty().pending_bytes(), 0);
+    }
+
+    #[test]
+    fn start_record_would_block_without_room_for_overhead() {
+        let mut buffer = [0u8; TLS_RECORD_OVERHEAD - 1];
+        let mut wb = WriteBuffer::from_info(&mut buffer, WriteBufferInfo::empty());
+        assert!(matches!(
+            wb.start_record(ClientRecordHeader::ApplicationData),
+            Err(TlsError::WouldBlock)
+        ));
+    }
+
+    #[test]
+    fn accounting_is_relative_to_record_offset() {
+        // Simulate one already-closed record occupying the front of the buffer.
+        const RECORD_OFFSET: usize = 200;
+        let mut buffer = [0u8; 1024];
+        let info = WriteBufferInfo {
+            pos: 0,
+            record_offset: RECORD_OFFSET,
+            current_header: None,
+            nonblocking: true,
+        };
+        let mut wb = WriteBuffer::from_info(&mut buffer, info);
+
+        assert_eq!(
+            wb.reborrow().space(),
+            1024 - TLS_RECORD_OVERHEAD - RECORD_OFFSET
+        );
+        assert!(!wb.is_full());
+        assert!(wb.is_empty()); // no open record yet
+
+        wb.start_record(ClientRecordHeader::ApplicationData)
+            .unwrap();
+        assert!(wb.contains(ClientRecordHeader::ApplicationData));
+        let header_len = wb.reborrow().len(); // header bytes written by start_record
+        assert_eq!(wb.append(&[0xAB; 50]), 50);
+        assert_eq!(wb.reborrow().len(), header_len + 50);
+    }
+
+    #[test]
+    fn into_info_reports_closed_bytes_and_resets_record_offset() {
+        let mut buffer = [0u8; 1024];
+        // 200 bytes of closed records, plus an open record of 40 bytes.
+        let info = WriteBufferInfo {
+            pos: 40,
+            record_offset: 200,
+            current_header: Some(ClientRecordHeader::ApplicationData),
+            nonblocking: true,
+        };
+        let wb = WriteBuffer::from_info(&mut buffer, info);
+        let (tx_complete, persisted) = wb.into_info();
+
+        // Closed records are reported as transmittable...
+        assert_eq!(tx_complete, 200);
+        // ...and the persisted info carries the open record forward with record_offset zeroed.
+        assert_eq!(persisted.record_offset, 0);
+        assert_eq!(persisted.pos, 40);
+        assert_eq!(persisted.pending_bytes(), 40);
+        assert!(matches!(
+            persisted.current_header,
+            Some(ClientRecordHeader::ApplicationData)
+        ));
+    }
+
+    /// Regression test for the blocking/async buffer-space leak: closing a record
+    /// in blocking mode must NOT advance `record_offset` (the record is transmitted
+    /// immediately and the buffer reused), whereas non-blocking mode retains it.
+    #[test]
+    fn blocking_close_does_not_accumulate_record_offset() {
+        let mut ks = KeySchedule::<Aes128GcmSha256>::new();
+        // A non-encrypted handshake header lets `close_record` run without real keys.
+        let header = ClientRecordHeader::Handshake(false);
+
+        // Blocking/async mode (`new`): record_offset stays 0 after a close.
+        let mut blocking = [0u8; 1024];
+        let mut wb = WriteBuffer::new(&mut blocking);
+        wb.start_record(header).unwrap();
+        wb.append(&[0xAB; 50]);
+        wb.close_record(ks.write_state()).unwrap();
+        assert_eq!(wb.into_info().0, 0, "blocking mode must not accumulate");
+
+        // Non-blocking mode (`from_info`/`empty`): the closed record is retained.
+        let mut nonblocking = [0u8; 1024];
+        let mut wb = WriteBuffer::from_info(&mut nonblocking, WriteBufferInfo::empty());
+        wb.start_record(header).unwrap();
+        wb.append(&[0xAB; 50]);
+        wb.close_record(ks.write_state()).unwrap();
+        assert!(
+            wb.into_info().0 > 0,
+            "non-blocking mode must retain the record"
+        );
+    }
 }

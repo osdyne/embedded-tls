@@ -37,6 +37,89 @@ fn setup() -> SocketAddr {
     })
 }
 
+static ADDR_MTLS: OnceLock<SocketAddr> = OnceLock::new();
+
+/// Like [`setup`], but the server requires (and verifies) a client certificate,
+/// exercising the `ClientCert`/`ClientCertVerify` states of the non-blocking
+/// handshake.
+fn setup_mtls() -> SocketAddr {
+    *ADDR_MTLS.get_or_init(|| {
+        let addr: SocketAddr = "127.0.0.1:12346".parse().unwrap();
+        let listener = TcpListener::bind(addr).expect("cannot listen on port");
+        let addr = listener
+            .local_addr()
+            .expect("error retrieving socket address");
+
+        std::thread::spawn(move || {
+            use rustls::server::AllowAnyAuthenticatedClient;
+            use tlsserver::*;
+
+            let test_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests");
+            let ca = load_certs(&test_dir.join("data").join("ca-cert.pem"));
+            let certs = load_certs(&test_dir.join("data").join("server-cert.pem"));
+            let privkey = load_private_key(&test_dir.join("data").join("server-key.pem"));
+
+            let mut client_auth_roots = rustls::RootCertStore::empty();
+            for root in ca.iter() {
+                client_auth_roots.add(root).unwrap();
+            }
+
+            let config = rustls::ServerConfig::builder()
+                .with_cipher_suites(rustls::ALL_CIPHER_SUITES)
+                .with_kx_groups(&rustls::ALL_KX_GROUPS)
+                .with_protocol_versions(&[&rustls::version::TLS13])
+                .unwrap()
+                .with_client_cert_verifier(
+                    AllowAnyAuthenticatedClient::new(client_auth_roots).boxed(),
+                )
+                .with_single_cert(certs, privkey)
+                .unwrap();
+
+            run_with_config(listener, config);
+        });
+
+        addr
+    })
+}
+
+/// Minimal `CryptoProvider` that presents a client certificate (P-256 signer),
+/// for the mutual-TLS handshake test.
+struct CertProvider<'a> {
+    rng: OsRng,
+    priv_key: &'a [u8],
+    client_cert: embedded_tls::Certificate<&'a [u8]>,
+}
+
+impl embedded_tls::CryptoProvider for CertProvider<'_> {
+    type CipherSuite = embedded_tls::Aes128GcmSha256;
+    type Signature = p256::ecdsa::DerSignature;
+
+    fn rng(&mut self) -> impl embedded_tls::CryptoRngCore {
+        &mut self.rng
+    }
+
+    fn signer(
+        &mut self,
+    ) -> Result<
+        (
+            impl signature::SignerMut<Self::Signature>,
+            embedded_tls::SignatureScheme,
+        ),
+        embedded_tls::TlsError,
+    > {
+        let secret_key = ecdsa::elliptic_curve::SecretKey::from_sec1_der(self.priv_key)
+            .map_err(|_| embedded_tls::TlsError::InvalidPrivateKey)?;
+        Ok((
+            p256::ecdsa::SigningKey::from(&secret_key),
+            embedded_tls::SignatureScheme::EcdsaSecp256r1Sha256,
+        ))
+    }
+
+    fn client_cert(&mut self) -> Option<embedded_tls::Certificate<impl AsRef<[u8]>>> {
+        Some(self.client_cert)
+    }
+}
+
 const BUFFER_SIZE: usize = 16384;
 
 /// A very simple connection buffer.
@@ -272,8 +355,7 @@ fn test_nonblocking_ping() {
             tx_was_blocked |= written != bytes_to_send;
 
             if total_tx == BYTES_TO_SEND {
-                let _ = buf
-                    .retry_blocking(&mut tls, &mut stream, |tls, workbuf| tls.flush(workbuf))
+                buf.retry_blocking(&mut tls, &mut stream, |tls, workbuf| tls.flush(workbuf))
                     .expect("error writing data");
             }
         }
@@ -335,5 +417,60 @@ fn test_nonblocking_ping() {
     buf.retry_blocking(&mut tls, &mut stream, |tls, workbuf| tls.close(workbuf))
         .expect("error closing session data");
 
+    buf.try_transmit(&mut stream);
+}
+
+/// Exercises the mutual-TLS handshake (`ClientCert`/`ClientCertVerify` states)
+/// through the non-blocking API, then a minimal round-trip to confirm the
+/// session is usable.
+#[test]
+fn test_nonblocking_client_cert() {
+    use embedded_tls::nonblocking::*;
+
+    let addr = setup_mtls();
+    let client_cert_der = pem_parser::pem_to_der(include_str!("data/client-cert.pem"));
+    let private_key_der = pem_parser::pem_to_der(include_str!("data/client-key.pem"));
+
+    let mut stream = TcpStream::connect(addr).expect("error connecting to server");
+    let mut buf = Buffer::new();
+
+    let config = TlsConfig::new().with_server_name("factbird.com");
+    let mut context = TlsContext::new(
+        &config,
+        CertProvider {
+            rng: OsRng,
+            priv_key: &private_key_der,
+            client_cert: Certificate::X509(&client_cert_der[..]),
+        },
+    );
+
+    let mut tls: TlsConnection<Aes128GcmSha256> = TlsConnection::new();
+
+    while !tls.opened {
+        buf.retry_blocking(&mut tls, &mut stream, |tls, workbuf| {
+            tls.continue_open(&mut context, workbuf)
+        })
+        .expect("TLS open failed");
+    }
+
+    let written = buf
+        .retry_blocking(&mut tls, &mut stream, |tls, workbuf| {
+            tls.write(b"ping", workbuf)
+        })
+        .expect("error writing data");
+    assert_eq!(written, 4);
+    buf.retry_blocking(&mut tls, &mut stream, |tls, workbuf| tls.flush(workbuf))
+        .expect("error flushing data");
+
+    let mut rx_buf = [0; 4096];
+    let sz = buf
+        .retry_blocking(&mut tls, &mut stream, |tls, workbuf| {
+            tls.read(workbuf, &mut rx_buf)
+        })
+        .expect("error reading data");
+    assert_eq!(b"ping", &rx_buf[..sz]);
+
+    buf.retry_blocking(&mut tls, &mut stream, |tls, workbuf| tls.close(workbuf))
+        .expect("error closing session data");
     buf.try_transmit(&mut stream);
 }
