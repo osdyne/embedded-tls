@@ -186,6 +186,42 @@ where
         }
     }
 
+    /// Append plaintext to the current `ApplicationData` record without ever
+    /// closing it, so no crypto runs here. The plaintext-only counterpart to
+    /// [`Self::write`]: a record sealed by [`Self::flush`] elsewhere is what
+    /// actually encrypts.
+    ///
+    /// Returns the number of bytes buffered (can be a partial write), or
+    /// `Err(TlsError::WouldBlock)` if no progress is possible until the
+    /// buffered record is flushed and transmitted to free space.
+    pub fn append(&mut self, buf: &[u8], workbuf: &mut Workbuf) -> Result<usize, TlsError> {
+        if !self.opened {
+            return Err(TlsError::MissingHandshake);
+        }
+
+        if !workbuf
+            .write_buffer
+            .contains(ClientRecordHeader::ApplicationData)
+        {
+            // A leftover open record (any other type) must be sealed elsewhere
+            // before a fresh ApplicationData record can be started.
+            if !workbuf.write_buffer.is_empty() {
+                return Err(TlsError::WouldBlock);
+            }
+            // `WouldBlock` here means the buffer is full of closed records
+            // still awaiting transmission.
+            workbuf
+                .write_buffer
+                .start_record(ClientRecordHeader::ApplicationData)?;
+        }
+
+        let buffered = workbuf.write_buffer.append(buf);
+        if buffered == 0 && !buf.is_empty() {
+            return Err(TlsError::WouldBlock);
+        }
+        Ok(buffered)
+    }
+
     /// Force all previously written, buffered bytes to be encoded into a tls record, so that the
     /// TLS record is ready for transmission.
     pub fn flush(&mut self, workbuf: &mut Workbuf) -> Result<(), TlsError> {
@@ -250,6 +286,47 @@ where
         } else {
             Err(TlsError::MissingHandshake)
         }
+    }
+
+    /// Decode and decrypt the next record into the internal plaintext buffer,
+    /// without handing the plaintext out. Runs the record crypto, so it can be
+    /// driven from a dedicated thread while plaintext-only consumers use
+    /// [`Self::read_decrypted`].
+    ///
+    /// No-op (returns `Ok`) if plaintext is already buffered; it must be
+    /// consumed via [`Self::read_decrypted`] before the next record is
+    /// decrypted. `Ok` therefore means plaintext is available;
+    /// `Err(TlsError::WouldBlock)` means no full record has arrived yet.
+    pub fn decrypt_pending(&mut self, workbuf: &mut Workbuf<'_>) -> Result<(), TlsError> {
+        if !self.opened {
+            return Err(TlsError::MissingHandshake);
+        }
+        if self.decrypted.is_empty() {
+            self.read_application_data(&mut workbuf.record_reader)?;
+        }
+        Ok(())
+    }
+
+    /// Returns already-decrypted plaintext, never decoding a new record, so no
+    /// crypto runs here. The plaintext-only counterpart to
+    /// [`Self::read_buffered`]; [`Self::decrypt_pending`] (run elsewhere)
+    /// produces the plaintext. `Err(TlsError::WouldBlock)` if nothing is
+    /// buffered.
+    pub fn read_decrypted<'a, 'b, 'c>(
+        &'a mut self,
+        workbuf: &'c mut Workbuf<'b>,
+    ) -> Result<ReadBuffer<'c>, TlsError>
+    where
+        'a: 'c,
+        'b: 'c,
+    {
+        if !self.opened {
+            return Err(TlsError::MissingHandshake);
+        }
+        if self.decrypted.is_empty() {
+            return Err(TlsError::WouldBlock);
+        }
+        Ok(self.create_read_buffer(&mut workbuf.record_reader))
     }
 
     fn read_application_data(&mut self, record_reader: &mut RecordReader) -> Result<(), TlsError> {
@@ -373,6 +450,27 @@ mod test {
         let mut out = [0u8; 4];
         assert!(matches!(
             tls.read(&mut workbuf, &mut out),
+            Err(TlsError::MissingHandshake)
+        ));
+    }
+
+    #[test]
+    fn split_plaintext_io_before_handshake_is_rejected() {
+        let mut tls: TlsConnection<Aes128GcmSha256> = TlsConnection::new();
+        let mut rx = [0u8; 256];
+        let mut tx = [0u8; 256];
+        let mut workbuf = tls.take_workbuf(&mut rx, &mut tx);
+
+        assert!(matches!(
+            tls.append(b"ping", &mut workbuf),
+            Err(TlsError::MissingHandshake)
+        ));
+        assert!(matches!(
+            tls.decrypt_pending(&mut workbuf),
+            Err(TlsError::MissingHandshake)
+        ));
+        assert!(matches!(
+            tls.read_decrypted(&mut workbuf),
             Err(TlsError::MissingHandshake)
         ));
     }
